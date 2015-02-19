@@ -1,0 +1,96 @@
+---
+title: "PracMachLearnCourseProject"
+author: "Arho Toikka"
+date: "Tuesday, February 17, 2015"
+output: html_document
+---
+# Assessing quality of weight lifting exercise with Inertial Measurement Units
+
+In this course project, we use the Weight Lifting Exercise data set (Velloso et al. 2013) to predict quality of a bicep curl from inertial measurement units attached to the hand, forearm, belt, and dumbbell. The exercisers were told to do five variations, 1 correct and 4 different mistakes. 
+
+Here's how the original paper (Velloso et al. 2013) describes the outcome variable, classe:
+"Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)"
+
+## The data set
+
+Let's load the data set and split into a training set and a test (validation) set. The data set is actually time series data, and should be used as such, but the test set given to us is random sample of observations, not a random sample of chunks, so it's pretty hard to model it as a time series. Thus, we delete the time variables and pretend everything is independent. There are about 20000 observations, each corresponding to a measurement taken 45 times per second, in chunks of about 8 seconds.
+
+There are also six subjects - young men doing the exercise. They do the exercises in completely differently - i.e. there is no overlap between the measurements for how a correct bicep curl is done between a pair of subjects, at least not for all pairs. Thus, essentially the classification model will learn how to predict one subject really well, but the model is essentially useless for predicting the other subjects. 
+I will demonstrate this problem quickly with Leave-One-Subject-Out cross-validation (LOSO) and some plots, but my main analysis will ignore this.
+
+The data comes with columns where the researchers have calculated certain descriptive statistics per second, or over 45 observations, like mean, skewness, etc. The original authors actually use these in their model, but the data set has some quality issues (some measurements are in the wrong columns, some are all NA, some are impossible to track), these are unusable and are deleted. It would be useful to recalculate them and use these in the model, but as we have a random sample, it's not really possible. (For example, calculating variance in chunks of 45 observations makes sense, but doing so when we have samples of 20 from some, 40 from some is not very practical.)
+```{r}
+library(randomForest)
+library(dplyr)
+library(RCurl)
+library(caret)
+data <- getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", ssl.verifypeer=0L, followlocation=1L)
+traindata <- read.csv(text=data, header=TRUE, na.strings=c("", "#DIV/0!", "NA"))
+trainIndex <- createDataPartition(y=traindata$classe, p=0.7, list=FALSE)
+train <- traindata[trainIndex,]
+test <- traindata[-trainIndex,] 
+trainnm <- train[colSums(!is.na(train)) > 1000]
+drop <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+          "cvtd_timestamp", "new_window", "num_window")
+trainnm <- trainnm[,!(colnames(trainnm) %in% drop)]
+
+testnm <- test[colSums(!is.na(test)) > 1000]
+testnm <- testnm[,!(colnames(testnm) %in% drop)]
+
+```
+
+To demonstrate the most fundamental problem with the data set, here are a few measurements from the full training data set by user, a person doing the exercise. You can see why a model that predicts Carlitos and Jeremy will be different from one that predicts Charles and Pedro, while Adelmo is pretty much an outlier. 
+```{r}
+ggplot(traindata, aes(x=roll_belt, y=pitch_forearm)) + geom_point(aes(colour=classe)) + facet_wrap(~user_name)
+```
+
+## Model building
+
+Given the large differences and small overlaps between subject/class in the measurements, it is not surprising that any classification method is able to almost perfectly distinguish between the classes - as long as it has data from the same subject. We'll just throw the data at a random forest model with default options.
+
+```{r}
+rffit <- randomForest(classe~., data=trainnm)
+rfpredict <- predict(rffit, newdata=testnm)
+table(rfpredict, testnm$classe)
+sum(rfpredict==testnm$classe) / nrow(testnm)
+```
+
+Random forest models include a cross-validation procedure - they take a sample of the observations for each prediction tree they build (default is 500) and estimate out-of-bag error, or how a tree predicts on the cases left out of the building of that particular tree.
+
+We do further cross-validation by predicting the test cases, completely left out.
+```{r}
+rffit
+table(rfpredict, testnm$classe)
+sum(rfpredict==testnm$classe) / nrow(testnm)
+```
+
+You see that our preidctions fare extremely well - estimated out-of-bag error of 0.56% and out-of-sample error of 0.5% seem to imply that the model predicts really well. We could play with different models and different parameters, and potentially improve towards 100% a little bit, but chasing better than this is probably not sensible.
+
+But let's demonstrate another validation approach - LOSO. Instead of doing all of them, I'll just do one to show what the problem with the data is. So, instead of a random selection of cases for training and data, we use all of observations of Charles as testing and all observations of the five other guys as training.
+```{r}
+
+charles <- traindata[!(traindata$user_name=="charles"),]
+charles <- charles[colSums(!is.na(charles)) > 1000]
+charles <- charles[,!(colnames(charles) %in% drop)]
+
+charlestest <- traindata[(traindata$user_name=="charles"),]
+charlestest <- charlestest[colSums(!is.na(charlestest)) > 1000]
+charlestest <- charlestest[,!(colnames(charlestest) %in% drop)]
+
+rfcharles <- randomForest(classe~., data=charles)
+charlespred <- predict(rfcharles, charlestest)
+
+table(charlespred,charlestest$classe)
+sum(charlespred==charlestest$classe) /nrow(charlestest)
+```
+
+Now, the accuracy of the model takes a nosedive, correctly predicting 55.9% of Charles's bicep curls. 
+
+## Conclusion
+
+The task given to us is very problematic - there are structure in the data that are unexplainable given the material (like Adelmo's perfectly still forearm), it should be a time series, etc. So, even though the out-of-sample looks like we almost a perfect model, the demonstrated leave one subject out shows that it is unlikely to generalize outside these six.
+
+References
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
